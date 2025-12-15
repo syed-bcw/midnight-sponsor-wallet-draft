@@ -28,6 +28,7 @@ import {
   type BalancedProvingRecipe,
 } from '@midnight-ntwrk/midnight-js-types';
 import { assertIsContractAddress } from '@midnight-ntwrk/midnight-js-utils';
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 
 // New wallet SDK imports
 import { HDWallet, Roles } from '@midnight-ntwrk/wallet-sdk-hd';
@@ -447,6 +448,9 @@ export const buildWalletFromHexSeed = async (
 };
 
 export const configureProviders = async (walletContext: WalletContext, config: Config) => {
+  // Set global network ID - required before contract deployment
+  setNetworkId(config.networkId);
+
   const walletAndMidnightProvider = await createWalletAndMidnightProvider(walletContext);
   return {
     privateStateProvider: levelPrivateStateProvider<typeof CounterPrivateStateId>({

@@ -27,7 +27,7 @@ cd ../counter-cli && npm run build
 In a separate terminal (keep it running):
 
 ```bash
-docker run -p 6300:6300 midnightnetwork/proof-server -- midnight-proof-server --network preview
+docker run -p 6300:6300 midnightnetwork/proof-server:6.1.0-alpha.6 -- midnight-proof-server --network preview
 ```
 
 ### 3. Run the CLI
