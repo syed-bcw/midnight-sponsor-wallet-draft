@@ -70,6 +70,13 @@ export interface WalletContext {
   unshieldedKeystore: UnshieldedKeystore;
 }
 
+// Lightweight keys-only context (no wallet services started)
+export interface WalletKeysContext {
+  shieldedSecretKeys: ledger.ZswapSecretKeys;
+  dustSecretKey: ledger.DustSecretKey;
+  unshieldedKeystore: UnshieldedKeystore;
+}
+
 export const getCounterLedgerState = async (
   providers: CounterProviders,
   contractAddress: ContractAddress,
@@ -135,41 +142,61 @@ export const displayCounterValue = async (
 };
 
 /**
- * Create wallet and midnight provider from the new WalletFacade
+ * Create wallet and midnight provider with sponsor pattern
+ * 
+ * This provider allows an empty wallet (prover) to own the contract state
+ * while a sponsor wallet pays for transaction fees and dust.
+ * 
+ * @param sponsorWalletContext - The funded wallet that will pay fees (must have funds and dust)
+ * @param config - Configuration
+ * @param proverKeys - Keys for the wallet that will own contract state (optional - if not provided, sponsor owns state)
  */
 export const createWalletAndMidnightProvider = async (
-  walletContext: WalletContext,
+  sponsorWalletContext: WalletContext,
+  config: Config,
+  proverKeys?: WalletKeysContext,
 ): Promise<WalletProvider & MidnightProvider> => {
-  // Wait for wallet to sync first
+  // Wait for sponsor wallet to sync first (it has the funds)
   await Rx.firstValueFrom(
-    walletContext.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+    sponsorWalletContext.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
   );
 
+  // Use prover keys if provided, otherwise use sponsor keys
+  const ownerKeys = proverKeys ?? sponsorWalletContext;
+  
+  if (proverKeys) {
+    logger.info('Using separate prover keys for contract state ownership');
+  }
+
   return {
+    // These keys determine who OWNS the contract state
     getCoinPublicKey(): ledger.CoinPublicKey {
-      return walletContext.shieldedSecretKeys.coinPublicKey as unknown as ledger.CoinPublicKey;
+      return ownerKeys.shieldedSecretKeys.coinPublicKey as unknown as ledger.CoinPublicKey;
     },
     getEncryptionPublicKey(): ledger.EncPublicKey {
-      return walletContext.shieldedSecretKeys.encryptionPublicKey as unknown as ledger.EncPublicKey;
+      return ownerKeys.shieldedSecretKeys.encryptionPublicKey as unknown as ledger.EncPublicKey;
     },
+    // Balancing uses the SPONSOR wallet's funds and dust
     async balanceTx(
       tx: ledger.UnprovenTransaction,
       newCoins?: ledger.ShieldedCoinInfo[],
       ttl?: Date,
     ): Promise<BalancedProvingRecipe> {
-      // Use the wallet facade to balance the transaction
       const txTtl = ttl ?? new Date(Date.now() + 30 * 60 * 1000); // 30 min default TTL
-      // balanceTransaction returns a ProvingRecipe directly
-      const provingRecipe = await walletContext.wallet.balanceTransaction(
-        walletContext.shieldedSecretKeys,
-        walletContext.dustSecretKey,
+      
+      // Use sponsor wallet's keys for balancing (they have the funds and dust)
+      const provingRecipe = await sponsorWalletContext.wallet.balanceTransaction(
+        sponsorWalletContext.shieldedSecretKeys,
+        sponsorWalletContext.dustSecretKey,
         tx as unknown as ledger.Transaction<ledger.SignatureEnabled, ledger.Proofish, ledger.Bindingish>,
         txTtl,
       );
+
       return provingRecipe as unknown as BalancedProvingRecipe;
     },
+    // Submit through sponsor wallet
     async submitTx(tx: ledger.FinalizedTransaction): Promise<ledger.TransactionId> {
-      return await walletContext.wallet.submitTransaction(tx);
+      return await sponsorWalletContext.wallet.submitTransaction(tx);
     },
   };
 };
@@ -177,7 +204,7 @@ export const createWalletAndMidnightProvider = async (
 export const waitForSync = (wallet: WalletFacade) =>
   Rx.firstValueFrom(
     wallet.state().pipe(
-      Rx.throttleTime(5_000),
+      Rx.throttleTime(5_00),
       Rx.tap((state) => {
         logger.info(`Waiting for wallet sync. Synced: ${state.isSynced}`);
       }),
@@ -188,7 +215,7 @@ export const waitForSync = (wallet: WalletFacade) =>
 export const waitForFunds = (wallet: WalletFacade) =>
   Rx.firstValueFrom(
     wallet.state().pipe(
-      Rx.throttleTime(10_000),
+      Rx.throttleTime(10_00),
       Rx.tap((state) => {
         const unshielded = state.unshielded?.balances[ledger.nativeToken().raw] ?? 0n;
         const shielded = state.shielded?.balances[ledger.nativeToken().raw] ?? 0n;
@@ -290,6 +317,45 @@ export const mnemonicToSeed = async (mnemonic: string): Promise<Buffer> => {
   return Buffer.from(seed);
 };
 
+/**
+ * Derive wallet keys from mnemonic WITHOUT starting wallet services.
+ * This is a lightweight way to get keys for a prover/owner wallet
+ * that doesn't need to sync or have funds.
+ */
+export const deriveKeysFromMnemonic = async (
+  mnemonic: string,
+  config: Config,
+): Promise<WalletKeysContext> => {
+  logger.info('Deriving keys from mnemonic (no wallet services)...');
+  
+  const seed = await mnemonicToSeed(mnemonic);
+  const hdWallet = HDWallet.fromSeed(seed);
+
+  if (hdWallet.type !== 'seedOk') {
+    throw new Error('Failed to initialize HDWallet');
+  }
+
+  const derivationResult = hdWallet.hdWallet
+    .selectAccount(0)
+    .selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust])
+    .deriveKeysAt(0);
+
+  if (derivationResult.type !== 'keysDerived') {
+    throw new Error('Failed to derive keys');
+  }
+
+  hdWallet.hdWallet.clear();
+
+  const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(derivationResult.keys[Roles.Zswap]);
+  const dustSecretKey = ledger.DustSecretKey.fromSeed(derivationResult.keys[Roles.Dust]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const unshieldedKeystore = createKeystore(derivationResult.keys[Roles.NightExternal], config.networkId as any);
+
+  logger.info(`Derived keys for address: ${unshieldedKeystore.getBech32Address().asString()}`);
+
+  return { shieldedSecretKeys, dustSecretKey, unshieldedKeystore };
+};
+
 // Wallet configuration type
 interface WalletConfiguration {
   networkId: string;
@@ -369,7 +435,7 @@ export const initWalletWithSeed = async (
 
 /**
  * Build wallet from mnemonic and wait for funds
- */
+ */  
 export const buildWalletAndWaitForFunds = async (
   config: Config,
   mnemonic: string,
@@ -397,6 +463,19 @@ export const buildWalletAndWaitForFunds = async (
   // Register Night UTXOs for dust generation (required for paying fees)
   await registerNightForDust(walletContext);
 
+  return walletContext;
+};
+
+export const buildWalletAndDontWaitForFunds = async (
+  config: Config,
+  mnemonic: string,
+): Promise<WalletContext> => {
+  logger.info('Building wallet from mnemonic...');
+
+  const seed = await mnemonicToSeed(mnemonic);
+  const walletContext = await initWalletWithSeed(seed, config);
+
+  logger.info(`Your wallet address: ${walletContext.unshieldedKeystore.getBech32Address().asString()}`);
   return walletContext;
 };
 
@@ -447,18 +526,37 @@ export const buildWalletFromHexSeed = async (
   return walletContext;
 };
 
-export const configureProviders = async (walletContext: WalletContext, config: Config) => {
+export const configureProviders = async (
+  sponsorWalletContext: WalletContext,
+  config: Config,
+  proverKeys?: WalletKeysContext,
+) => {
   // Set global network ID - required before contract deployment
   setNetworkId(config.networkId);
 
-  const walletAndMidnightProvider = await createWalletAndMidnightProvider(walletContext);
+  const originalURL = global.URL;
+  // global.URL = class extends originalURL {
+  //   constructor(path: string, base?: string | undefined) {
+  //     path = path.replace(/^\/+/, '/midnight/zkpaas/testnet/46634Y77zrsb1294Z72h9P02MN43d4N4/');
+  //     super(path, base);
+  //   }
+  // } as any;
+  const proofProvider = httpClientProofProvider(config.proofServer);
+  global.URL = originalURL; // Restore original URL class
+
+  const walletAndMidnightProvider = await createWalletAndMidnightProvider(
+    sponsorWalletContext,
+    config,
+    proverKeys,
+  );
   return {
     privateStateProvider: levelPrivateStateProvider<typeof CounterPrivateStateId>({
       privateStateStoreName: contractConfig.privateStateStoreName,
     }),
     publicDataProvider: indexerPublicDataProvider(config.indexer, config.indexerWS),
     zkConfigProvider: new NodeZkConfigProvider<'increment'>(contractConfig.zkConfigPath),
-    proofProvider: httpClientProofProvider(config.proofServer),
+    proofProvider: proofProvider, 
+    //httpClientProofProvider(config.proofServer),
     walletProvider: walletAndMidnightProvider,
     midnightProvider: walletAndMidnightProvider,
   };

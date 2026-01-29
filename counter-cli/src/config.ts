@@ -35,7 +35,7 @@ export class TestnetLocalConfig implements Config {
   indexer = 'http://127.0.0.1:8088/api/v1/graphql';
   indexerWS = 'ws://127.0.0.1:8088/api/v1/graphql/ws';
   node = 'ws://127.0.0.1:9944';
-  proofServer = 'http://127.0.0.1:6300';
+  proofServer = 'https://starter.qa.arkhia.network/midnight/zkpaas/testnet/46634Y77zrsb1294Z72h9P02MN43d4N4';
   networkId = 'testnet';
 }
 
@@ -44,7 +44,7 @@ export class StandaloneConfig implements Config {
   indexer = 'http://127.0.0.1:8088/api/v1/graphql';
   indexerWS = 'ws://127.0.0.1:8088/api/v1/graphql/ws';
   node = 'ws://127.0.0.1:9944';
-  proofServer = 'http://127.0.0.1:6300';
+  proofServer = 'https://starter.qa.arkhia.network/midnight/zkpaas/testnet/46634Y77zrsb1294Z72h9P02MN43d4N4';
   networkId = 'undeployed';
 }
 
@@ -53,7 +53,8 @@ export class PreviewConfig implements Config {
   indexer = 'https://indexer.preview.midnight.network/api/v3/graphql';
   indexerWS = 'wss://indexer.preview.midnight.network/api/v3/graphql/ws';
   node = 'wss://rpc.preview.midnight.network';
-  proofServer = 'http://127.0.0.1:6300';
+  // proofServer = 'https://starter.qa.arkhia.network/midnight/zkpaas/testnet/46634Y77zrsb1294Z72h9P02MN43d4N4';
+  proofServer = 'https://lace-proof-pub.preview.midnight.network'
   networkId = 'preview';
 }
 

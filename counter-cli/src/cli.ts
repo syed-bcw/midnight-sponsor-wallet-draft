@@ -67,7 +67,7 @@ const deployOrJoin = async (providers: CounterProviders, rli: Interface): Promis
   }
 };
 
-const mainLoop = async (providers: CounterProviders, rli: Interface): Promise<void> => {
+const mainLoop = async (providers: CounterProviders, rli: Interface, config: Config): Promise<void> => {
   const counterContract = await deployOrJoin(providers, rli);
   if (counterContract === null) {
     return;
@@ -145,7 +145,39 @@ const mapContainerPort = (env: StartedDockerComposeEnvironment, url: string, con
   return mappedUrl.toString().replace(/\/+$/, '');
 };
 
-export const run = async (config: Config, _logger: Logger, dockerEnv?: DockerComposeEnvironment): Promise<void> => {
+export const runDirectly = async (config: Config, _logger: Logger): Promise<void> => {
+  logger = _logger;
+  api.setLogger(_logger);
+  const rli = createInterface({ input, output, terminal: true });
+  let env;
+  let sponsorWalletContext: WalletContext | null = null;
+
+  // Sponsor wallet - has funds and dust to pay for transactions
+  const mnemonic_funded = 'sell spell coral harsh actor faculty hawk spatial nest client story skin rally town rapid solid ginger olympic regret twist swallow cloud abuse shadow';
+  sponsorWalletContext = await api.buildWalletAndWaitForFunds(config, mnemonic_funded);
+
+  // This wallet will modify the contract state but doesn't need funds
+  const mnemonic_empty = 'response jazz gate space chaos adjust life embark major kick iron taxi note cost visit slim glimpse settle motion response cream ivory sudden term';
+  const proverKeys = await api.deriveKeysFromMnemonic(mnemonic_empty, config);
+  logger.info(`Prover wallet address (will own contract state): ${proverKeys.unshieldedKeystore.getBech32Address().asString()}`);
+
+  if (sponsorWalletContext !== null) {
+    // Configure providers with sponsor (pays fees) and prover keys (owns state)
+    const providers = await api.configureProviders(sponsorWalletContext, config, proverKeys);
+    const contractAddress = '7d03ae7388bec1bf57814f672424e4162dab94111d37367782f61d46c2ba757d';
+    const counterContract = await api.joinContract(providers, contractAddress);
+    await api.increment(counterContract);
+    
+    // Cleanup - only sponsor wallet needs to be closed
+    await api.closeWallet(sponsorWalletContext);
+    process.exit(0);
+  }
+}
+
+export const run = async (config: Config, _logger: Logger, dockerEnv?: DockerComposeEnvironment, doRunDirectly = false): Promise<void> => {
+  if (doRunDirectly) {
+    return runDirectly(config, _logger);
+  }
   logger = _logger;
   api.setLogger(_logger);
   const rli = createInterface({ input, output, terminal: true });
@@ -167,7 +199,7 @@ export const run = async (config: Config, _logger: Logger, dockerEnv?: DockerCom
     walletContext = await buildWallet(config, rli);
     if (walletContext !== null) {
       const providers = await api.configureProviders(walletContext, config);
-      await mainLoop(providers, rli);
+      await mainLoop(providers, rli, config);
     }
   } catch (e) {
     if (e instanceof Error) {
